@@ -14,6 +14,7 @@
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/init.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/cache.h>
 #include <zephyr/drivers/usb/uhc.h>
 #include <zephyr/drivers/pinctrl.h>
 
@@ -170,6 +171,12 @@ static void uhc_mcux_transfer_callback(void *param, usb_host_transfer_t *transfe
 #endif
 	if ((xfer->buf != NULL) && (transfer->transferBuffer != NULL)) {
 		if (transfer->transferSofar > 0) {
+#if !defined(CONFIG_NOCACHE_MEMORY)
+			if (USB_EP_DIR_IS_IN(xfer->ep)) {
+				(void)sys_cache_data_invd_range(transfer->transferBuffer,
+								transfer->transferSofar);
+			}
+#endif
 #if defined(CONFIG_NOCACHE_MEMORY)
 			memcpy(xfer->buf->__buf, transfer->transferBuffer, transfer->transferSofar);
 #endif
@@ -229,6 +236,14 @@ static int uhc_mcux_enqueue(const struct device *dev, struct uhc_transfer *const
 		return -ENOMEM;
 	}
 
+#if !defined(CONFIG_NOCACHE_MEMORY)
+	if (xfer->buf != NULL && mcux_xfer->transferBuffer != NULL &&
+	    USB_EP_DIR_IS_OUT(xfer->ep)) {
+		(void)sys_cache_data_flush_range(mcux_xfer->transferBuffer,
+						 mcux_xfer->transferLength);
+	}
+#endif
+
 	if (mcux_ep->endpointAddress == 0 && mcux_ep->update_addr) {
 		mcux_ep->update_addr = 0;
 		/* update control endpoint address here */
@@ -236,9 +251,17 @@ static int uhc_mcux_enqueue(const struct device *dev, struct uhc_transfer *const
 	}
 
 	uhc_mcux_lock(dev);
-	/* give the transfer to MCUX drv. */
-	status = priv->mcux_if->controllerWritePipe(priv->mcux_host.controllerHandle,
-						    mcux_ep, mcux_xfer);
+	/* Route transfer API by endpoint direction.
+	 * IN endpoints must use controllerReadPipe, while OUT/control setup
+	 * stays on controllerWritePipe.
+	 */
+	if (USB_EP_DIR_IS_IN(xfer->ep) && USB_EP_GET_IDX(xfer->ep) != 0U) {
+		status = priv->mcux_if->controllerReadPipe(priv->mcux_host.controllerHandle,
+							   mcux_ep, mcux_xfer);
+	} else {
+		status = priv->mcux_if->controllerWritePipe(priv->mcux_host.controllerHandle,
+							    mcux_ep, mcux_xfer);
+	}
 	uhc_mcux_unlock(dev);
 	if (status != kStatus_USB_Success) {
 		return -ENOMEM;

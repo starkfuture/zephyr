@@ -83,6 +83,8 @@ int uhc_mcux_shutdown(const struct device *dev)
 	config->irq_disable_func(dev);
 	k_thread_abort(&priv->drv_stack_data);
 	priv->mcux_if->controllerDestory(priv->mcux_host.controllerHandle);
+	/* controllerDestory() invalidates pipe handles; clear table */
+	memset(priv->mcux_eps, 0, sizeof(priv->mcux_eps));
 
 	return 0;
 }
@@ -292,6 +294,8 @@ usb_host_pipe_t *uhc_mcux_init_hal_ep(const struct device *dev, struct uhc_trans
 	/* TODO: need right way to implement it. */
 	if (pipe_init.endpointAddress == 0) {
 		pipe_init.pipeType = USB_ENDPOINT_CONTROL;
+	} else if (xfer->interval > 0) {
+		pipe_init.pipeType = USB_ENDPOINT_INTERRUPT;
 	} else {
 		pipe_init.pipeType = USB_ENDPOINT_BULK;
 	}
@@ -303,13 +307,7 @@ usb_host_pipe_t *uhc_mcux_init_hal_ep(const struct device *dev, struct uhc_trans
 		return NULL;
 	}
 
-	/* Initialize mcux hal endpoint pipe
-	 * TODO: Need one way to release the pipe.
-	 * Otherwise the priv->mcux_eps will be used up after
-	 * supporting hub and connecting/disconnecting multiple times.
-	 * For example: add endpoint/pipe init and de-init controller
-	 * interafce to resolve the issue.
-	 */
+	/* Store the new pipe in an empty slot */
 	uhc_mcux_lock(dev);
 	for (i = 0; i < USB_HOST_CONFIG_MAX_PIPES; i++) {
 		if (priv->mcux_eps[i] == NULL) {
@@ -320,8 +318,36 @@ usb_host_pipe_t *uhc_mcux_init_hal_ep(const struct device *dev, struct uhc_trans
 	uhc_mcux_unlock(dev);
 
 	if (i >= USB_HOST_CONFIG_MAX_PIPES) {
-		priv->mcux_if->controllerClosePipe(priv->mcux_host.controllerHandle, mcux_ep);
-		mcux_ep = NULL;
+		/*
+		 * Pipe table full: reclaim a slot occupied by a pipe
+		 * for a different (likely disconnected) device.  After
+		 * a USB device is removed and a new one enumerates, the
+		 * old pipes remain in the table with a stale
+		 * deviceHandle.  Close the first stale one and reuse
+		 * its slot for the newly opened pipe.
+		 */
+		usb_host_pipe_t *stale = NULL;
+
+		uhc_mcux_lock(dev);
+		for (i = 0; i < USB_HOST_CONFIG_MAX_PIPES; i++) {
+			if (priv->mcux_eps[i] != NULL &&
+			    priv->mcux_eps[i]->deviceHandle != xfer->udev) {
+				stale = priv->mcux_eps[i];
+				priv->mcux_eps[i] = mcux_ep;
+				break;
+			}
+		}
+		uhc_mcux_unlock(dev);
+
+		if (stale != NULL) {
+			LOG_DBG("Reclaimed stale pipe slot %u", i);
+			priv->mcux_if->controllerClosePipe(
+				priv->mcux_host.controllerHandle, stale);
+		} else {
+			priv->mcux_if->controllerClosePipe(
+				priv->mcux_host.controllerHandle, mcux_ep);
+			mcux_ep = NULL;
+		}
 	}
 
 	return mcux_ep;
@@ -352,6 +378,8 @@ int uhc_mcux_hal_init_transfer_common(const struct device *dev, usb_host_transfe
 		mcux_xfer->direction = USB_REQTYPE_GET_DIR(mcux_xfer->setupPacket->bmRequestType)
 					       ? USB_IN
 					       : USB_OUT;
+	} else {
+		mcux_xfer->direction = USB_EP_DIR_IS_IN(xfer->ep) ? USB_IN : USB_OUT;
 	}
 
 	return 0;
