@@ -28,8 +28,19 @@ struct usb_device *usbh_device_get(struct usbh_contex *const uhs_ctx, const uint
 struct usb_device *usbh_device_alloc(struct usbh_contex *const uhs_ctx);
 void usbh_device_free(struct usb_device *const udev);
 
+/* Free device and all descendants (by parent) */
+void usbh_device_free_subtree(struct usb_device *const udev);
+
+/* Get device by parent hub and port (for duplicate check) */
+struct usb_device *usbh_device_get_by_parent_port(struct usbh_contex *const ctx,
+						  struct usb_device *const parent,
+						  uint8_t hub_port);
+
 /* Reset and configure new USB device */
 int usbh_device_init(struct usb_device *const udev);
+
+/* Init child device without bus reset (for hub downstream enumeration) */
+int usbh_device_init_child(struct usb_device *const udev);
 
 /* Set USB device interface alternate */
 int usbh_device_interface_set(struct usb_device *const udev,

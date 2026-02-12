@@ -82,6 +82,10 @@ struct usb_device {
 	uint8_t actual_cfg;
 	/** Device address */
 	uint8_t addr;
+	/** Parent hub device, NULL for root-attached devices */
+	struct usb_device *parent;
+	/** Parent hub downstream port number (1..N), 0 for root-attached devices */
+	uint8_t hub_port;
 	/** Pointer to actual device configuration descriptor */
 	void *cfg_desc;
 	/** Pointers to device interfaces */

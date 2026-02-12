@@ -96,6 +96,22 @@ struct usbh_class_data {
 	int (*resumed)(struct usbh_contex *const uhs_ctx);
 };
 
+/** USB host device lifecycle event type. */
+enum usbh_device_event {
+	USBH_DEVICE_EVENT_ENUMERATED = 0,
+	USBH_DEVICE_EVENT_REMOVED,
+};
+
+/**
+ * @brief USB host device event callback.
+ *
+ * Called when a USB device is fully enumerated/configured or removed.
+ */
+typedef void (*usbh_device_event_cb_t)(struct usbh_contex *const uhs_ctx,
+				       struct usb_device *const udev,
+				       enum usbh_device_event event,
+				       void *user_data);
+
 /**
  */
 #define USBH_DEFINE_CLASS(name) \
@@ -143,6 +159,26 @@ int usbh_disable(struct usbh_contex *uhs_ctx);
  * @return 0 on success, other values on fail.
  */
 int usbh_shutdown(struct usbh_contex *const uhs_ctx);
+
+/**
+ * @brief Register for USB host device lifecycle events.
+ *
+ * @param[in] cb Callback to invoke for device events.
+ * @param[in] user_data Opaque user pointer passed back to callback.
+ *
+ * @return 0 on success, negative errno otherwise.
+ */
+int usbh_device_event_register(usbh_device_event_cb_t cb, void *user_data);
+
+/**
+ * @brief Unregister previously registered USB host device event callback.
+ *
+ * @param[in] cb Callback function pointer.
+ * @param[in] user_data Opaque user pointer used during register.
+ *
+ * @return 0 on success, negative errno otherwise.
+ */
+int usbh_device_event_unregister(usbh_device_event_cb_t cb, void *user_data);
 
 /**
  * @}

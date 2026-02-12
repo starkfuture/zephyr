@@ -311,3 +311,32 @@ int usbh_req_set_hcfs_prst(struct usb_device *const udev,
 			      bmRequestType, bRequest, wValue, wIndex, 0,
 			      NULL);
 }
+
+int usbh_req_get_hcfs_ppst(struct usb_device *const udev, const uint8_t port,
+			   uint32_t *const status)
+{
+	const uint8_t bmRequestType = USB_REQTYPE_DIR_TO_HOST << 7 |
+				      USB_REQTYPE_TYPE_CLASS << 5 |
+				      USB_REQTYPE_RECIPIENT_OTHER << 0;
+	const uint8_t bRequest = USB_HCREQ_GET_STATUS;
+	const uint16_t wValue = 0;
+	const uint16_t wIndex = port;
+	const uint16_t wLength = 4;
+	struct net_buf *buf;
+	int ret;
+
+	buf = usbh_xfer_buf_alloc(udev, wLength);
+	if (!buf) {
+		return -ENOMEM;
+	}
+
+	ret = usbh_req_setup(udev, bmRequestType, bRequest, wValue, wIndex,
+			     wLength, buf);
+	if (ret == 0 && buf->len >= 4) {
+		*status = sys_get_le32(buf->data);
+	}
+
+	usbh_xfer_buf_free(udev, buf);
+
+	return ret;
+}

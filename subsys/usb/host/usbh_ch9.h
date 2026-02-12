@@ -68,4 +68,7 @@ int usbh_req_set_hcfs_ppwr(const struct usb_device *udev,
 int usbh_req_set_hcfs_prst(const struct usb_device *udev,
 			   const uint8_t port);
 
+int usbh_req_get_hcfs_ppst(struct usb_device *const udev, const uint8_t port,
+			   uint32_t *const status);
+
 #endif /* ZEPHYR_INCLUDE_USBH_CH9_H */

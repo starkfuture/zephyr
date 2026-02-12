@@ -5,10 +5,12 @@
  */
 
 #include <zephyr/usb/usbh.h>
+#include <zephyr/usb/usb_ch9.h>
 #include <zephyr/sys/byteorder.h>
 
 #include "usbh_device.h"
 #include "usbh_ch9.h"
+#include "usbh_internal.h"
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(usbh_dev, CONFIG_USBH_LOG_LEVEL);
@@ -46,6 +48,46 @@ void usbh_device_free(struct usb_device *const udev)
 	}
 
 	k_mem_slab_free(&usb_device_slab, (void *)udev);
+}
+
+void usbh_device_free_subtree(struct usb_device *const udev)
+{
+	struct usbh_contex *const ctx = udev->ctx;
+	struct usb_device *children[32];
+	int n = 0;
+	struct usb_device *child;
+
+	SYS_DLIST_FOR_EACH_CONTAINER(&ctx->udevs, child, node) {
+		if (child->parent == udev) {
+			children[n++] = child;
+			if (n >= 32) {
+				break;
+			}
+		}
+	}
+	for (int i = 0; i < n; i++) {
+		usbh_device_free_subtree(children[i]);
+	}
+	usbh_notify_device_event(ctx, udev, USBH_DEVICE_EVENT_REMOVED);
+	if (udev->dev_desc.bDeviceClass == USB_BCC_HUB) {
+		usbh_hub_monitor_stop(udev);
+	}
+	usbh_device_free(udev);
+}
+
+struct usb_device *usbh_device_get_by_parent_port(struct usbh_contex *const ctx,
+						  struct usb_device *const parent,
+						  uint8_t hub_port)
+{
+	struct usb_device *udev;
+
+	SYS_DLIST_FOR_EACH_CONTAINER(&ctx->udevs, udev, node) {
+		if (udev->parent == parent && udev->hub_port == hub_port) {
+			return udev;
+		}
+	}
+
+	return NULL;
 }
 
 struct usb_device *usbh_device_get_any(struct usbh_contex *const uhs_ctx)
@@ -447,7 +489,8 @@ error:
 	return err;
 }
 
-int usbh_device_init(struct usb_device *const udev)
+static int usbh_device_init_common(struct usb_device *const udev,
+				   const bool do_bus_reset)
 {
 	struct usbh_contex *const uhs_ctx = udev->ctx;
 	uint8_t new_addr;
@@ -464,11 +507,13 @@ int usbh_device_init(struct usb_device *const udev)
 		return err;
 	}
 
-	/* FIXME: The port to which the device is connected should be reset. */
-	err = uhc_bus_reset(uhs_ctx->dev);
-	if (err) {
-		LOG_ERR("Failed to signal bus reset");
-		return err;
+	if (do_bus_reset) {
+		/* FIXME: The port to which the device is connected should be reset. */
+		err = uhc_bus_reset(uhs_ctx->dev);
+		if (err) {
+			LOG_ERR("Failed to signal bus reset");
+			goto error;
+		}
 	}
 
 	/*
@@ -527,4 +572,14 @@ error:
 	k_mutex_unlock(&udev->mutex);
 
 	return err;
+}
+
+int usbh_device_init(struct usb_device *const udev)
+{
+	return usbh_device_init_common(udev, true);
+}
+
+int usbh_device_init_child(struct usb_device *const udev)
+{
+	return usbh_device_init_common(udev, false);
 }
