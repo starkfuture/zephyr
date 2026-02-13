@@ -37,6 +37,10 @@ K_MSGQ_DEFINE(usbh_bus_msgq, sizeof(struct uhc_event),
 
 #define USBH_DEVICE_EVENT_LISTENER_MAX 8
 #define HUB_MONITOR_MAX 8
+#define HUB_MONITOR_ENQUEUE_RETRIES 8
+#define HUB_MONITOR_ENQUEUE_RETRY_DELAY_MS 20
+#define HUB_PORT_INIT_FAIL_BACKOFF_MS 2000
+#define HUB_PORT_RETRY_GUARD_MAX 32
 
 struct usbh_device_event_listener {
 	usbh_device_event_cb_t cb;
@@ -54,13 +58,73 @@ struct hub_monitor {
 	bool active;
 };
 
+struct hub_port_retry_guard {
+	uint8_t hub_addr;
+	uint8_t port;
+	int64_t next_retry_ms;
+};
+
 static struct hub_monitor hub_monitors[HUB_MONITOR_MAX];
+static struct hub_port_retry_guard hub_port_retry_guards[HUB_PORT_RETRY_GUARD_MAX];
 K_SEM_DEFINE(hub_evt_sem, 0, 1);
 static K_KERNEL_STACK_DEFINE(usbh_hub_evt_stack, CONFIG_USBH_STACK_SIZE);
 static struct k_thread usbh_hub_evt_thread_data;
 
 static void usbh_hub_enumerate_children(struct usbh_contex *const ctx,
 					struct usb_device *const hub);
+
+static struct hub_port_retry_guard *hub_port_retry_guard_get(uint8_t hub_addr,
+							      uint8_t port,
+							      bool create)
+{
+	struct hub_port_retry_guard *free_slot = NULL;
+
+	for (int i = 0; i < HUB_PORT_RETRY_GUARD_MAX; i++) {
+		if (hub_port_retry_guards[i].hub_addr == hub_addr &&
+		    hub_port_retry_guards[i].port == port) {
+			return &hub_port_retry_guards[i];
+		}
+
+		if (create && free_slot == NULL &&
+		    hub_port_retry_guards[i].hub_addr == 0U) {
+			free_slot = &hub_port_retry_guards[i];
+		}
+	}
+
+	if (create && free_slot != NULL) {
+		free_slot->hub_addr = hub_addr;
+		free_slot->port = port;
+		free_slot->next_retry_ms = 0;
+		return free_slot;
+	}
+
+	return NULL;
+}
+
+static bool hub_port_retry_blocked(struct usb_device *const hub, uint8_t port)
+{
+	struct hub_port_retry_guard *guard = hub_port_retry_guard_get(hub->addr, port, false);
+
+	return guard != NULL && guard->next_retry_ms > k_uptime_get();
+}
+
+static void hub_port_retry_mark_failed(struct usb_device *const hub, uint8_t port)
+{
+	struct hub_port_retry_guard *guard = hub_port_retry_guard_get(hub->addr, port, true);
+
+	if (guard != NULL) {
+		guard->next_retry_ms = k_uptime_get() + HUB_PORT_INIT_FAIL_BACKOFF_MS;
+	}
+}
+
+static void hub_port_retry_clear(struct usb_device *const hub, uint8_t port)
+{
+	struct hub_port_retry_guard *guard = hub_port_retry_guard_get(hub->addr, port, false);
+
+	if (guard != NULL) {
+		guard->next_retry_ms = 0;
+	}
+}
 
 int usbh_device_event_register(usbh_device_event_cb_t cb, void *user_data)
 {
@@ -214,11 +278,22 @@ static bool hub_status_has_change(struct net_buf *buf)
 	if (buf == NULL || buf->len == 0) {
 		return false;
 	}
-	for (size_t i = 0; i < buf->len; i++) {
-		if (buf->data[i] != 0) {
+
+	/*
+	 * Bitmap bit 0 is hub-level status change. For child enumeration we only
+	 * care about downstream port bits (bit 1+). Treating bit 0 as a child
+	 * change can cause pointless rescan storms on hubs that keep it asserted.
+	 */
+	if ((buf->data[0] & ~BIT(0)) != 0U) {
+		return true;
+	}
+
+	for (size_t i = 1; i < buf->len; i++) {
+		if (buf->data[i] != 0U) {
 			return true;
 		}
 	}
+
 	return false;
 }
 
@@ -336,6 +411,7 @@ static void usbh_hub_monitor_start(struct usbh_contex *const ctx,
 	struct hub_monitor *mon = NULL;
 	struct uhc_transfer *xfer;
 	const size_t hub_status_size = 4;
+	int ret = 0;
 
 	ep_desc = hub_find_status_change_ep(hub);
 	if (ep_desc == NULL) {
@@ -377,15 +453,23 @@ static void usbh_hub_monitor_start(struct usbh_contex *const ctx,
 	mon->active = true;
 	atomic_set(&mon->pending, 0);
 
-	if (uhc_ep_enqueue(ctx->dev, xfer) != 0) {
-		LOG_ERR("Failed to enqueue hub monitor");
-		mon->active = false;
-		mon->hub = NULL;
-		(void)uhc_xfer_free(ctx->dev, xfer);
-		return;
+	for (int attempt = 0; attempt < HUB_MONITOR_ENQUEUE_RETRIES; attempt++) {
+		ret = uhc_ep_enqueue(ctx->dev, xfer);
+		if (ret == 0) {
+			LOG_INF("Hub monitor started for addr %u", hub->addr);
+			return;
+		}
+
+		/* Initial child traffic can transiently starve transfer slots. */
+		k_sleep(K_MSEC(HUB_MONITOR_ENQUEUE_RETRY_DELAY_MS));
 	}
 
-	LOG_INF("Hub monitor started for addr %u", hub->addr);
+	LOG_ERR("Failed to enqueue hub monitor for addr %u after %u retries (%d)",
+		hub->addr, HUB_MONITOR_ENQUEUE_RETRIES, ret);
+	mon->active = false;
+	mon->hub = NULL;
+	(void)uhc_xfer_free(ctx->dev, xfer);
+	mon->xfer = NULL;
 }
 
 void usbh_hub_monitor_stop(struct usb_device *const hub)
@@ -469,6 +553,7 @@ static void usbh_hub_enumerate_children(struct usbh_contex *const ctx,
 		}
 		usbh_hub_ack_change_bits(hub, p, port_status);
 		if (!(port_status & USB_HUB_PORT_CONNECTION)) {
+			hub_port_retry_clear(hub, p);
 			/* Disconnected: remove subtree if we had a child here */
 			child = usbh_device_get_by_parent_port(ctx, hub, p);
 			if (child != NULL) {
@@ -480,6 +565,10 @@ static void usbh_hub_enumerate_children(struct usbh_contex *const ctx,
 		/* Avoid duplicate: already have device at this parent+port */
 		child = usbh_device_get_by_parent_port(ctx, hub, p);
 		if (child != NULL) {
+			continue;
+		}
+
+		if (hub_port_retry_blocked(hub, p)) {
 			continue;
 		}
 
@@ -519,9 +608,11 @@ static void usbh_hub_enumerate_children(struct usbh_contex *const ctx,
 
 		if (usbh_device_init_child(child) != 0) {
 			LOG_ERR("Failed to init child on port %u", p);
+			hub_port_retry_mark_failed(hub, p);
 			usbh_device_free(child);
 			continue;
 		}
+		hub_port_retry_clear(hub, p);
 		LOG_INF("child VID %04x:%04x class %02x",
 			child->dev_desc.idVendor, child->dev_desc.idProduct,
 			child->dev_desc.bDeviceClass);
