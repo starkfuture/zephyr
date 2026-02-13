@@ -48,7 +48,7 @@ struct usbh_device_event_listener {
 };
 
 static struct usbh_device_event_listener usbh_dev_event_listeners[USBH_DEVICE_EVENT_LISTENER_MAX];
-static struct k_mutex usbh_dev_event_lock;
+static K_MUTEX_DEFINE(usbh_dev_event_lock);
 
 /** Hub monitor state for event-driven hotplug */
 struct hub_monitor {
@@ -809,8 +809,6 @@ int usbh_init_device_intl(struct usbh_contex *const uhs_ctx)
 
 static int uhs_pre_init(void)
 {
-	k_mutex_init(&usbh_dev_event_lock);
-
 	k_thread_create(&usbh_thread_data, usbh_stack,
 			K_KERNEL_STACK_SIZEOF(usbh_stack),
 			usbh_thread,

@@ -95,7 +95,7 @@ static usb_status_t mcux_host_callback(usb_device_handle deviceHandle,
 static int uhc_mcux_init(const struct device *dev)
 {
 	const struct uhc_mcux_config *config = dev->config;
-	usb_phy_config_struct_t *phy_config;
+
 	struct uhc_mcux_data *priv = uhc_get_private(dev);
 	k_thread_entry_t thread_entry = NULL;
 	usb_status_t status;
@@ -110,6 +110,7 @@ static int uhc_mcux_init(const struct device *dev)
 	}
 
 #ifdef CONFIG_DT_HAS_NXP_USBPHY_ENABLED
+	usb_phy_config_struct_t *phy_config;
 	phy_config = ((const struct uhc_mcux_ehci_config *)dev->config)->phy_config;
 	if (phy_config != NULL) {
 		USB_EhciPhyInit(priv->controller_id, 0u, phy_config);
