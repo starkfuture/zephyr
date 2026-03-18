@@ -43,13 +43,48 @@ NET_BUF_POOL_DEFINE(pkt_pool, CONFIG_MCUMGR_TRANSPORT_NETBUF_COUNT,
 		    CONFIG_MCUMGR_TRANSPORT_NETBUF_SIZE,
 		    CONFIG_MCUMGR_TRANSPORT_NETBUF_USER_DATA_SIZE, NULL);
 
+void smp_debug_dump_pkt_pool_window(const char *tag, const struct net_buf *center)
+{
+	const uint8_t *pool_bufs = (const uint8_t *)pkt_pool.__bufs;
+	const size_t slot_count = CONFIG_MCUMGR_TRANSPORT_NETBUF_COUNT;
+	const size_t slot_stride = ROUND_UP(sizeof(struct net_buf) +
+					    CONFIG_MCUMGR_TRANSPORT_NETBUF_USER_DATA_SIZE,
+					    __alignof__(struct net_buf));
+	const ptrdiff_t idx = center ? (((const uint8_t *)center - pool_bufs) /
+					(ptrdiff_t)slot_stride) : -1;
+
+	printk("PKT_POOL %s center=%p idx=%d\n", tag, center, (int)idx);
+
+	if (!center || idx < 0 || idx >= slot_count) {
+		return;
+	}
+
+	for (int off = -1; off <= 2; off++) {
+		const ptrdiff_t cur = idx + off;
+		const struct net_buf *nb;
+
+		if (cur < 0 || cur >= slot_count) {
+			continue;
+		}
+
+		nb = (const struct net_buf *)(pool_bufs + (cur * slot_stride));
+		printk("PKT_POOL slot=%d nb=%p next=%p frags=%p ref=%u flags=%u pool=%u udsz=%u data=%p len=%u size=%u __buf=%p\n",
+		       (int)cur, nb, nb->node.next, nb->frags, nb->ref, nb->flags,
+		       nb->pool_id, nb->user_data_size, nb->data, nb->len, nb->size,
+		       nb->__buf);
+	}
+}
+
 struct net_buf *smp_packet_alloc(void)
 {
-	return net_buf_alloc(&pkt_pool, K_NO_WAIT);
+	struct net_buf * nb=net_buf_alloc(&pkt_pool, K_NO_WAIT);
+	printk("smp_packet_alloc %p\n",nb);
+	return nb;
 }
 
 void smp_packet_free(struct net_buf *nb)
 {
+	printk("smp_packet_free %p\n",nb);
 	net_buf_unref(nb);
 }
 
@@ -91,7 +126,7 @@ void *smp_alloc_rsp(const void *req, void *arg)
 void smp_free_buf(void *buf, void *arg)
 {
 	struct smp_transport *smpt = arg;
-
+	printk("smp_free_buffer %p\n",buf);
 	if (!buf) {
 		return;
 	}

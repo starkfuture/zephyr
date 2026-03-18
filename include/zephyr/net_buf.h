@@ -106,6 +106,10 @@ struct net_buf_simple {
 	uint8_t *__buf;
 };
 
+extern volatile struct net_buf_simple *debug_tracked_buf_simple;
+extern volatile struct net_buf *debug_tracked_req;
+void smp_debug_dump_pkt_pool_window(const char *tag, const struct net_buf *center);
+
 /**
  *
  * @brief Define a net_buf_simple stack variable and get a pointer to it.
@@ -171,8 +175,17 @@ void net_buf_simple_init_with_data(struct net_buf_simple *buf,
  */
 static inline void net_buf_simple_reset(struct net_buf_simple *buf)
 {
+	if (buf == debug_tracked_buf_simple) {
+		printk("TRACK simple_reset_before buf=%p len=%u data=%p __buf=%p ra=%p\n",
+		       buf, buf->len, buf->data, buf->__buf, __builtin_return_address(0));
+	}
+	printk("net_buf_simple_reset %p\n",buf);
 	buf->len  = 0U;
 	buf->data = buf->__buf;
+	if (buf == debug_tracked_buf_simple) {
+		printk("TRACK simple_reset_after buf=%p len=%u data=%p __buf=%p ra=%p\n",
+		       buf, buf->len, buf->data, buf->__buf, __builtin_return_address(0));
+	}
 }
 
 /**
@@ -1436,11 +1449,25 @@ static inline void net_buf_destroy(struct net_buf *buf)
 {
 	struct net_buf_pool *pool = net_buf_pool_get(buf->pool_id);
 
+	if (buf == debug_tracked_req) {
+		printk("TRACK destroy_before buf=%p ref=%u flags=%u pool=%u udsz=%u data=%p len=%u size=%u __buf=%p frags=%p\n",
+		       buf, buf->ref, buf->flags, buf->pool_id, buf->user_data_size,
+		       buf->data, buf->len, buf->size, buf->__buf, buf->frags);
+		smp_debug_dump_pkt_pool_window("destroy_before", buf);
+	}
+
 	if (buf->__buf) {
 		if (!(buf->flags & NET_BUF_EXTERNAL_DATA)) {
 			pool->alloc->cb->unref(buf, buf->__buf);
 		}
 		buf->__buf = NULL;
+	}
+
+	if (buf == debug_tracked_req) {
+		printk("TRACK destroy_after_unbuf buf=%p ref=%u flags=%u pool=%u udsz=%u data=%p len=%u size=%u __buf=%p frags=%p\n",
+		       buf, buf->ref, buf->flags, buf->pool_id, buf->user_data_size,
+		       buf->data, buf->len, buf->size, buf->__buf, buf->frags);
+		smp_debug_dump_pkt_pool_window("destroy_after_unbuf", buf);
 	}
 
 	k_lifo_put(&pool->free, buf);

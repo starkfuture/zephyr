@@ -16,6 +16,8 @@ LOG_MODULE_REGISTER(net_buf_simple, CONFIG_NET_BUF_LOG_LEVEL);
 
 #include <zephyr/net_buf.h>
 
+extern volatile struct net_buf_simple *debug_tracked_buf_simple;
+
 #if defined(CONFIG_NET_BUF_SIMPLE_LOG)
 #define NET_BUF_SIMPLE_DBG(fmt, ...) LOG_DBG("(%p) " fmt, k_current_get(), \
 				      ##__VA_ARGS__)
@@ -58,10 +60,20 @@ void *net_buf_simple_add(struct net_buf_simple *buf, size_t len)
 	uint8_t *tail = net_buf_simple_tail(buf);
 
 	NET_BUF_SIMPLE_DBG("buf %p len %zu", buf, len);
+	if (buf == debug_tracked_buf_simple) {
+		printk("TRACK simple_add_before buf=%p len=%u arg=%u data=%p __buf=%p ra=%p\n",
+		       buf, buf->len, (unsigned int)len, buf->data, buf->__buf,
+		       __builtin_return_address(0));
+	}
 
 	__ASSERT_NO_MSG(net_buf_simple_tailroom(buf) >= len);
 
 	buf->len += len;
+	if (buf == debug_tracked_buf_simple) {
+		printk("TRACK simple_add_after buf=%p len=%u arg=%u data=%p __buf=%p ra=%p\n",
+		       buf, buf->len, (unsigned int)len, buf->data, buf->__buf,
+		       __builtin_return_address(0));
+	}
 	return tail;
 }
 
@@ -447,11 +459,29 @@ void net_buf_simple_push_be64(struct net_buf_simple *buf, uint64_t val)
 void *net_buf_simple_pull(struct net_buf_simple *buf, size_t len)
 {
 	NET_BUF_SIMPLE_DBG("buf %p len %zu", buf, len);
-
-	__ASSERT_NO_MSG(buf->len >= len);
-
+	if (buf == debug_tracked_buf_simple) {
+		printk("TRACK simple_pull_before buf=%p len=%u arg=%u data=%p __buf=%p ra=%p\n",
+		       buf, buf->len, (unsigned int)len, buf->data, buf->__buf,
+		       __builtin_return_address(0));
+	}
+	if (buf->len<len) {
+		if (buf == debug_tracked_buf_simple && debug_tracked_req) {
+			smp_debug_dump_pkt_pool_window("buf_simple_fail", debug_tracked_req);
+		}
+		while (1) {
+			printk("Buf len %d < %d failure %p\n",buf->len, len, buf);
+			k_sleep(K_FOREVER);
+		}
+		__ASSERT_NO_MSG(buf->len >= len);
+	}
 	buf->len -= len;
-	return buf->data += len;
+	buf->data += len;
+	if (buf == debug_tracked_buf_simple) {
+		printk("TRACK simple_pull_after buf=%p len=%u arg=%u data=%p __buf=%p ra=%p\n",
+		       buf, buf->len, (unsigned int)len, buf->data, buf->__buf,
+		       __builtin_return_address(0));
+	}
+	return buf->data;
 }
 
 void *net_buf_simple_pull_mem(struct net_buf_simple *buf, size_t len)

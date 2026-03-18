@@ -89,7 +89,7 @@ void net_buf_reset(struct net_buf *buf)
 {
 	__ASSERT_NO_MSG(buf->flags == 0U);
 	__ASSERT_NO_MSG(buf->frags == NULL);
-
+	printk("net_buf_reset %p\n",buf);
 	net_buf_simple_reset(&buf->b);
 }
 
@@ -425,10 +425,18 @@ void net_buf_unref(struct net_buf *buf)
 #endif
 {
 	__ASSERT_NO_MSG(buf);
-
+	printk("net_buf_unref_debug %p, %s:%d\n",buf,func,line);
 	while (buf) {
 		struct net_buf *frags = buf->frags;
 		struct net_buf_pool *pool;
+
+		if (buf == debug_tracked_req) {
+			printk("TRACK unref_before buf=%p ref=%u flags=%u pool=%u udsz=%u data=%p len=%u size=%u __buf=%p frags=%p ra=%p\n",
+			       buf, buf->ref, buf->flags, buf->pool_id, buf->user_data_size,
+			       buf->data, buf->len, buf->size, buf->__buf, buf->frags,
+			       __builtin_return_address(0));
+			smp_debug_dump_pkt_pool_window("unref_before", buf);
+		}
 
 #if defined(CONFIG_NET_BUF_LOG)
 		if (!buf->ref) {
@@ -446,6 +454,14 @@ void net_buf_unref(struct net_buf *buf)
 
 		buf->data = NULL;
 		buf->frags = NULL;
+
+		if (buf == debug_tracked_req) {
+			printk("TRACK unref_zeroed buf=%p ref=%u flags=%u pool=%u udsz=%u data=%p len=%u size=%u __buf=%p frags=%p ra=%p\n",
+			       buf, buf->ref, buf->flags, buf->pool_id, buf->user_data_size,
+			       buf->data, buf->len, buf->size, buf->__buf, buf->frags,
+			       __builtin_return_address(0));
+			smp_debug_dump_pkt_pool_window("unref_zeroed", buf);
+		}
 
 		pool = net_buf_pool_get(buf->pool_id);
 

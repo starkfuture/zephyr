@@ -498,8 +498,14 @@ int
 img_mgmt_state_read(struct smp_streamer *ctxt)
 {
 	zcbor_state_t *zse = ctxt->writer->zs;
+	struct net_buf *req = ctxt->reader->nb;
 	uint32_t i;
 	bool ok;
+
+	printk("IMG state_read_entry req=%p len=%u ref=%u data=%p size=%u __buf=%p rsp=%p rsp_len=%u rsp_size=%u rsp_data=%p rsp___buf=%p rsp_ref=%u\n",
+	       req, req->len, req->ref, req->data, req->size, req->__buf,
+	       ctxt->writer->nb, ctxt->writer->nb->len, ctxt->writer->nb->size,
+	       ctxt->writer->nb->data, ctxt->writer->nb->__buf, ctxt->writer->nb->ref);
 
 	ok = zcbor_tstr_put_lit(zse, "images") &&
 	     zcbor_list_start_encode(zse, 2 * CONFIG_MCUMGR_GRP_IMG_UPDATABLE_IMAGE_NUMBER);
@@ -546,6 +552,10 @@ img_mgmt_state_read(struct smp_streamer *ctxt)
 		ok = zcbor_tstr_put_lit(zse, "splitStatus") &&
 		     zcbor_int32_put(zse, 0);
 	}
+	printk("IMG state_read_exit req=%p len=%u ref=%u data=%p size=%u __buf=%p rsp_len=%u rsp_size=%u rsp_data=%p rsp___buf=%p rsp_ref=%u ok=%d\n",
+	       req, req->len, req->ref, req->data, req->size, req->__buf,
+	       ctxt->writer->nb->len, ctxt->writer->nb->size, ctxt->writer->nb->data,
+	       ctxt->writer->nb->__buf, ctxt->writer->nb->ref, ok);
 
 	img_mgmt_release_lock();
 

@@ -25,7 +25,7 @@
 #ifdef CONFIG_MCUMGR_MGMT_NOTIFICATION_HOOKS
 #include <zephyr/mgmt/mcumgr/mgmt/callbacks.h>
 #endif
-
+volatile struct net_buf *debug_live_req;
 #ifdef CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL
 /*
  * @brief	Translate SMP version 2 error code to legacy SMP version 1 MCUmgr error code.
@@ -340,7 +340,7 @@ static void smp_on_err(struct smp_streamer *streamer, const struct smp_hdr *req_
 		       void *req, void *rsp, int status, const char *rsn)
 {
 	int rc;
-
+	printk("smp_on_err: req_hdr->nh_op = %d\n", req_hdr->nh_op);
 	/* Prefer the response buffer for holding the error response.  If no
 	 * response buffer was allocated, use the request buffer instead.
 	 */
@@ -354,7 +354,9 @@ static void smp_on_err(struct smp_streamer *streamer, const struct smp_hdr *req_
 
 	/* Build and transmit the error response. */
 	rc = smp_build_err_rsp(streamer, req_hdr, status, rsn);
+	printk("smp_on_err: rc = %d\n", rc);
 	if (rc == 0) {
+
 		streamer->smpt->functions.output(rsp);
 		rsp = NULL;
 	}
@@ -405,7 +407,7 @@ int smp_process_request_packet(struct smp_streamer *streamer, void *vreq)
 	while (req->len > 0) {
 		handler_found = false;
 		valid_hdr = false;
-
+		printk("smp_process_request_packet: req->len = %d\n", req->len);
 		/* Read the management header and strip it from the request. */
 		rc = smp_read_hdr(req, &req_hdr);
 		if (rc != 0) {
@@ -423,24 +425,46 @@ int smp_process_request_packet(struct smp_streamer *streamer, void *vreq)
 		}
 
 		if (req_hdr.nh_op == MGMT_OP_READ || req_hdr.nh_op == MGMT_OP_WRITE) {
+			struct net_buf *rsp_nb;
+
 			rsp = smp_alloc_rsp(req, streamer->smpt);
 			if (rsp == NULL) {
 				rc = MGMT_ERR_ENOMEM;
 				break;
 			}
+			rsp_nb = rsp;
+			printk("REQ after_alloc_rsp req=%p len=%u ref=%u data=%p size=%u __buf=%p rsp=%p rsp_len=%u rsp_size=%u rsp_data=%p rsp___buf=%p rsp_ref=%u\n",
+			       req, req->len, req->ref, req->data, req->size, req->__buf,
+			       rsp_nb, rsp_nb->len, rsp_nb->size, rsp_nb->data, rsp_nb->__buf,
+			       rsp_nb->ref);
 
 			cbor_nb_reader_init(streamer->reader, req);
 			cbor_nb_writer_init(streamer->writer, rsp);
 
 			/* Process the request payload and build the response. */
+			printk("REQ before_handle_single_req req=%p len=%u ref=%u data=%p size=%u __buf=%p rsp=%p rsp_len=%u rsp_size=%u rsp_data=%p rsp___buf=%p rsp_ref=%u\n",
+			       req, req->len, req->ref, req->data, req->size, req->__buf,
+			       rsp_nb, rsp_nb->len, rsp_nb->size, rsp_nb->data, rsp_nb->__buf,
+			       rsp_nb->ref);
 			rc = smp_handle_single_req(streamer, &req_hdr, &rsn);
+			printk("REQ after_handle_single_req req=%p len=%u ref=%u data=%p size=%u __buf=%p rsp=%p rsp_len=%u rsp_size=%u rsp_data=%p rsp___buf=%p rsp_ref=%u rc=%d\n",
+			       req, req->len, req->ref, req->data, req->size, req->__buf,
+			       rsp_nb, rsp_nb->len, rsp_nb->size, rsp_nb->data, rsp_nb->__buf,
+			       rsp_nb->ref, rc);
 			handler_found = (rc != MGMT_ERR_ENOTSUP);
 			if (rc != 0) {
 				break;
 			}
+			printk("REQ before_output req=%p len=%u ref=%u data=%p\n",
+				   req, req->len, req->ref, req->data);
 
 			/* Send the response. */
+			debug_live_req = req;
 			rc = streamer->smpt->functions.output(rsp);
+			debug_live_req = NULL;
+
+			printk("REQ after_output req=%p len=%u ref=%u data=%p\n",
+			       req, req->len, req->ref, req->data);
 			rsp = NULL;
 		} else if (IS_ENABLED(CONFIG_SMP_CLIENT) && (req_hdr.nh_op == MGMT_OP_READ_RSP ||
 			   req_hdr.nh_op == MGMT_OP_WRITE_RSP)) {
@@ -460,6 +484,9 @@ int smp_process_request_packet(struct smp_streamer *streamer, void *vreq)
 		if (rc != 0) {
 			break;
 		}
+		printk("REQ before_final_pull req=%p len=%u ref=%u data=%p need=%u\n",
+	   req, req->len, req->ref, req->data, req_hdr.nh_len);
+		smp_debug_dump_pkt_pool_window("before_final_pull", req);
 		/* Trim processed request to free up space for subsequent responses. */
 		net_buf_pull(req, req_hdr.nh_len);
 
